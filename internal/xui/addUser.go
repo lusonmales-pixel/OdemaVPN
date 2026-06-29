@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 type XUIClientSettings struct {
@@ -28,7 +29,13 @@ type XUIClientsFields struct {
 	Clients []XUIClientSettings `json:"clients"`
 }
 
+type XUIError struct {
+	SuccessStatus bool   `json:"success"`
+	Message       string `json:"msg"`
+}
+
 func (x *XUIClient) AddUser(ctx context.Context, inboundID int64, uuid string, TgID int64) error {
+	var xuiError XUIError
 	clientSpec := XUIClientSettings{
 		ID:         uuid,
 		Email:      strconv.FormatInt(TgID, 10),
@@ -66,7 +73,7 @@ func (x *XUIClient) AddUser(ctx context.Context, inboundID int64, uuid string, T
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "session", Value: x.CookieSession})
+	req.AddCookie(&http.Cookie{Name: "3x-ui", Value: x.CookieSession})
 
 	resp, err := x.HTTPClient.Do(req)
 	if err != nil {
@@ -75,9 +82,21 @@ func (x *XUIClient) AddUser(ctx context.Context, inboundID int64, uuid string, T
 
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to add client, server returned status: %d", resp.StatusCode)
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
 	}
 
+	err = json.Unmarshal(respBody, &xuiError)
+	if err != nil {
+		return err
+	}
+
+	if !xuiError.SuccessStatus && strings.Contains(xuiError.Message, "Duplicate") {
+		err = x.EnableUser(ctx, inboundID, uuid, TgID)
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }

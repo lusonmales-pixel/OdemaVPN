@@ -70,6 +70,7 @@ func main() {
 	http.HandleFunc("/api/v1/payments/lava/webhook", env.LavaWebhook)
 	http.Handle("/api/user/config", env.ValidateJWT(http.HandlerFunc(env.CreateKey)))
 	http.HandleFunc("/api/auth", env.Auth)
+	http.HandleFunc("/test/add-user", env.TestAddUser)
 
 	go func() {
 		ticker := time.NewTicker(24 * time.Hour)

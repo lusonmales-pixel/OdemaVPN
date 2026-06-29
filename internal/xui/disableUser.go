@@ -41,7 +41,7 @@ func (x *XUIClient) DisableUser(ctx context.Context, inboundID int64, uuid strin
 	req, err := http.NewRequestWithContext(ctx, "POST", disableClientURL, bytes.NewReader(finalReqDataByte))
 
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "session", Value: x.CookieSession})
+	req.AddCookie(&http.Cookie{Name: "3x-ui", Value: x.CookieSession})
 
 	resp, err := x.HTTPClient.Do(req)
 	if err != nil {

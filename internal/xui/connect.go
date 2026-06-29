@@ -39,7 +39,7 @@ func (x *XUIClient) Connect(ctx context.Context) error {
 	cookies := resp.Cookies()
 
 	for _, cookie := range cookies {
-		if cookie.Name == "session" {
+		if cookie.Name == "3x-ui" {
 			x.CookieSession = cookie.Value
 			log.Println("Успешно авторизовались в 3X-UI, кука получена!")
 			return nil

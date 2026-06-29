@@ -1,6 +1,7 @@
 package xui
 
 import (
+	"crypto/tls"
 	"net/http"
 	"time"
 )
@@ -20,6 +21,9 @@ func CreateClient(baseurl string, login string, password string) *XUIClient {
 		Password: password,
 		HTTPClient: &http.Client{
 			Timeout: time.Second * 10,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
 		},
 	}
 
