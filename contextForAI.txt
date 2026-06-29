@@ -1,0 +1,1146 @@
+### main.go ###
+package main
+
+import (
+	"context"
+	"log"
+	"net/http"
+	"os"
+	"strconv"
+	"svoy-vpn/internal/database"
+	"svoy-vpn/internal/handlers"
+	"svoy-vpn/internal/xui"
+	"time"
+
+	"github.com/joho/godotenv"
+)
+
+func main() {
+	if err := godotenv.Load(); err != nil {
+		log.Println("Warning: No .env file found, using system env")
+	}
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "9000"
+	}
+
+	xuiURL := os.Getenv("XUI_BASE_URL")
+	xuiLogin := os.Getenv("XUI_LOGIN")
+	xuiPassword := os.Getenv("XUI_PASSWORD")
+	inboundIDStr := os.Getenv("XUI_INBOUND_ID")
+
+	inboundID, err := strconv.ParseInt(inboundIDStr, 10, 64)
+	if err != nil {
+		log.Fatalln("Invalid XUI_INBOUND_ID in config:", err)
+	}
+
+	ctx := context.Background()
+
+	conn, err := database.Connect(ctx)
+	if err != nil {
+		log.Fatalln("Error connecting to database:", err)
+	}
+	defer conn.Close(ctx)
+
+	if err := database.InitTable(ctx, conn); err != nil {
+		log.Fatalln("Failed to create tables:", err)
+	}
+
+	xuiClient := xui.CreateClient(xuiURL, xuiLogin, xuiPassword)
+	if err := xuiClient.Connect(ctx); err != nil {
+		log.Println("WARNING: Failed to login into 3X-UI panel:", err)
+	}
+
+	env := &handlers.Env{
+		Conn:         conn,
+		XUIClient:    xuiClient,
+		BotToken:     os.Getenv("BOT_TOKEN"),
+		JwtSecret:    []byte(os.Getenv("JWT_SECRET")),
+		LavaShopID:   os.Getenv("LAVA_SHOP_ID"),
+		LavaSecret:   os.Getenv("LAVA_SECRET_KEY"),
+		XUIInboundID: inboundID,
+	}
+
+	http.HandleFunc("/api/payment/create", env.CreateOrder)
+	http.HandleFunc("/api/v1/payments/lava/webhook", env.LavaWebhook)
+	http.HandleFunc("/api/user/status", env.UserStatusHandler)
+	http.HandleFunc("/api/user/config", env.CreateKey)
+	http.HandleFunc("api/auth", env.Auth)
+
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		for range ticker.C {
+			ctx := context.Background()
+			log.Println("Running subscription expiration worker...")
+
+			expiredUsers, err := database.Expire(ctx, env.Conn)
+			if err != nil {
+				log.Println("Error in expiration worker database check:", err)
+				continue
+			}
+
+			for _, user := range expiredUsers {
+				err := env.XUIClient.DisableUser(ctx, env.XUIInboundID, user.Vless_uuid, user.TgId)
+				if err != nil {
+					log.Printf("Failed to disable user %d on 3X-UI panel: %v", user.TgId, err)
+				} else {
+					log.Printf("Successfully disabled expired user %d in 3X-UI panel", user.TgId)
+				}
+			}
+		}
+	}()
+
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+		log.Fatalln("Server failed to start:", err)
+	}
+}
+
+### activateSubscription.go ###
+
+package database
+
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+func DefineMounthsAmount(amount float64) int {
+	if amount == 150.0 {
+		return 1
+	}
+	if amount == 400.0 {
+		return 3
+	}
+	if amount == 1300 {
+		return 12
+	}
+
+	return 0
+}
+
+func Activate(ctx context.Context, conn *pgx.Conn, tgID int64, amount float64) error {
+
+	mounthAmount := DefineMounthsAmount(amount)
+	if mounthAmount == 0 {
+		log.Println("Wrong payment!")
+		err := errors.New("Wrong payment")
+		return err
+	}
+
+	var currentExpireDate time.Time
+	var newExpireDate time.Time
+
+	getExpireDate := `
+	SELECT expires_at
+	FROM subscriptions
+	WHERE user_id = $1
+	`
+
+	activateSubscription := `
+	UPDATE subscriptions 
+	SET expires_at = $1, status = 'active'
+	WHERE user_id = $2
+	`
+
+	err := conn.QueryRow(ctx, getExpireDate, tgID).Scan(&currentExpireDate)
+	if err != nil {
+		log.Println("Error", err)
+		return err
+	}
+
+	if currentExpireDate.After(time.Now()) {
+		newExpireDate = currentExpireDate.AddDate(0, mounthAmount, 0)
+	} else {
+		newExpireDate = time.Now().AddDate(0, mounthAmount, 0)
+	}
+
+	_, err = conn.Exec(ctx, activateSubscription, newExpireDate, tgID)
+	if err != nil {
+		log.Println("Error:", err)
+	}
+
+	return nil
+
+}
+
+
+### CheckUserStatus.go ###
+
+package database
+
+import (
+	"context"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
+func CheckStatus(ctx context.Context, conn *pgx.Conn, userID int64) (status string, err error) {
+	var expiresAt pgtype.Timestamp
+
+	query := `
+	SELECT status, expires_at FROM subscriptions
+	WHERE user_id = $1
+	`
+
+	err = conn.QueryRow(ctx, query, userID).Scan(&status, &expiresAt)
+	if err != nil {
+		return "", err
+	}
+
+	if status == "active" && expiresAt.Valid {
+		if time.Now().After(expiresAt.Time) {
+			query = `
+			UPDATE subscriptions
+			SET status = 'inactive'
+			WHERE user_id = $1
+			`
+
+			_, _ = conn.Exec(ctx, query, userID)
+			return "inactive", nil
+		}
+	}
+
+	return status, nil
+}
+
+
+### connectDB.go ###
+
+package database
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+)
+
+func Connect(ctx context.Context) (*pgx.Conn, error) {
+	return pgx.Connect(ctx, "postgres://postgres:12345@localhost:5432/svoy-vpn")
+}
+
+
+### createUser.go ###
+
+package database
+
+import (
+	"context"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+)
+
+func CreateUserIfNotExits(ctx context.Context, conn *pgx.Conn, tgID int64, username string) (string, bool, error) {
+	vless_uuid := uuid.New().String()
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return "", false, err
+	}
+
+	defer tx.Rollback(ctx)
+
+	query1 := `
+	INSERT INTO users (id, username, vless_uuid)
+	VALUES ($1, $2, $3)
+	ON CONFLICT (id) DO NOTHING;
+	RETURNING id
+	`
+
+	var InsertFlag int64
+
+	err = tx.QueryRow(ctx, query1, tgID, username, vless_uuid).Scan(&InsertFlag)
+
+	isNew := true
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			isNew = false
+		} else {
+			return "", false, err
+		}
+	}
+
+	if isNew {
+		query2 := `
+		INSERT INTO subscriptions (user_id, status, expires_at)
+		VALUES ($1, 'active', NOW() + INTERVAL '1 day')
+		ON CONFLICT (user_id) DO NOTHING
+		`
+
+		_, err = tx.Exec(ctx, query2, tgID)
+
+		if err != nil {
+			return "", false, err
+		}
+	}
+
+	err = tx.Commit(ctx)
+	if err != nil {
+		return "", false, err
+	}
+
+	return vless_uuid, true, nil
+
+}
+
+
+### expireSubscription.go ###
+
+package database
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+)
+
+type ExpiredUser struct {
+	Vless_uuid string
+	TgId       int64
+}
+
+func Expire(ctx context.Context, conn *pgx.Conn) ([]ExpiredUser, error) {
+	query := `
+	UPDATE subscriptions s
+	SET status = 'inactive'
+	FROM users u
+	WHERE s.user_id = u.id 
+	  AND s.status = 'active' 
+	  AND s.expires_at < NOW()
+	RETURNING u.vless_uuid, u.id;
+	`
+
+	rows, err := conn.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	defer rows.Close()
+
+	var expiredUsers []ExpiredUser
+	for rows.Next() {
+		var eu ExpiredUser
+		err := rows.Scan(&eu.Vless_uuid, &eu.TgId)
+		if err != nil {
+			return nil, err
+		}
+		expiredUsers = append(expiredUsers, eu)
+	}
+
+	return expiredUsers, nil
+}
+
+
+### getUUID.go ###
+
+package database
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+)
+
+func GetUUID(ctx context.Context, conn *pgx.Conn, tgID int64) (uuid string, err error) {
+	query := `
+	SELECT vless_uuid FROM users
+	WHERE id = $1	
+	`
+
+	rows, err := conn.Query(ctx, query, tgID)
+	if err != nil {
+		return "", err
+	}
+
+	for rows.Next() {
+		err = rows.Scan(&uuid)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	return uuid, nil
+
+}
+
+
+### initTable.go ###
+
+package database
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+)
+
+func InitTable(ctx context.Context, conn *pgx.Conn) error {
+	sqlQuery := `
+	CREATE TABLE IF NOT EXISTS users (
+	id BIGINT PRIMARY KEY,
+	username VARCHAR(100),
+	vless_uuid VARCHAR(36) DEFAULT NULL,
+	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS subscriptions (
+	user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+	status VARCHAR(20) DEFAULT 'inactive',
+	expires_at TIMESTAMP DEFAULT NULL,
+	updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	`
+
+	_, err := conn.Exec(ctx, sqlQuery)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+
+### CreateKey.go ###
+
+package handlers
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"svoy-vpn/internal/database"
+)
+
+func (e *Env) CreateKey(w http.ResponseWriter, r *http.Request) {
+	var userid UserID
+	ctx := r.Context()
+
+	httpRequestBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		e.RespondWithError(w, http.StatusBadRequest, "Failed to read body")
+		return
+	}
+
+	err = json.Unmarshal(httpRequestBody, &userid)
+	if err != nil {
+		e.RespondWithError(w, http.StatusBadRequest, "Failed to convert request body")
+		return
+	}
+
+	status, err := database.CheckStatus(ctx, e.Conn, userid.ID)
+	if err != nil {
+		log.Println("Database error checking status:", err)
+		e.RespondWithError(w, http.StatusInternalServerError, "Internal database error")
+		return
+	}
+
+	if status != "active" {
+		e.RespondWithError(w, http.StatusForbidden, "Subscribe is inactive")
+		return
+	}
+
+	vlessUUID, err := database.GetUUID(ctx, e.Conn, userid.ID)
+	if err != nil {
+		log.Println("Database error getting UUID:", err)
+		e.RespondWithError(w, http.StatusInternalServerError, "Internal database error")
+		return
+	}
+
+	vlessURL := fmt.Sprintf(
+		"vless://%s@2.26.105.226:443?type=tcp&security=reality&pbk=Z1_vIn2G4v97Oisw7SgC6Qh9rW_wF841XWv265U_I00&fp=chrome&sni=www.nvidia.com&sid=0410427b68634839&spx=%%2F#OdemaVPN",
+		vlessUUID,
+	)
+
+	e.RespondWithJSON(w, http.StatusOK, ResponseKey{VlessURL: vlessURL})
+}
+
+
+### createOrder.go ###
+
+package handlers
+
+import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"io"
+	"net/http"
+
+	"github.com/google/uuid"
+)
+
+func CreateSignature(byteStruct []byte, secretKey string) string {
+	h := hmac.New(sha256.New, []byte(secretKey))
+	h.Write(byteStruct)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func (e *Env) CreateOrder(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var req OrderRequest
+
+	httpRequestBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		e.RespondWithError(w, http.StatusBadRequest, "Failed to read body")
+		return
+	}
+
+	err = json.Unmarshal(httpRequestBody, &req)
+	if err != nil {
+		e.RespondWithError(w, http.StatusBadRequest, "Failed to parse JSON request")
+		return
+	}
+
+	invoiceReq := LavaInvoiceRequest{
+		Sum:          req.Amount,
+		OrderId:      uuid.New().String(),
+		ShopId:       e.LavaShopID,
+		CustomFields: req.TgID,
+	}
+
+	invoiceReqByte, err := json.Marshal(invoiceReq)
+	if err != nil {
+		e.RespondWithError(w, http.StatusInternalServerError, "Failed to build invoice")
+		return
+	}
+
+	signature := CreateSignature(invoiceReqByte, e.LavaSecret)
+	lavaUrl := "https://api.lava.ru/invoice/create"
+
+	lavaRequest, err := http.NewRequestWithContext(ctx, "POST", lavaUrl, bytes.NewReader(invoiceReqByte))
+	if err != nil {
+		e.RespondWithError(w, http.StatusInternalServerError, "Failed to create request!")
+		return
+	}
+	lavaRequest.Header.Set("Content-Type", "application/json")
+	lavaRequest.Header.Set("Accept", "application/json")
+	lavaRequest.Header.Set("Signature", signature)
+
+	client := http.Client{}
+	response, err := client.Do(lavaRequest)
+	if err != nil {
+		e.RespondWithError(w, http.StatusBadGateway, "Failed to send request to Lava")
+		return
+	}
+
+	defer response.Body.Close()
+
+	respBytes, err := io.ReadAll(response.Body)
+	if err != nil {
+		e.RespondWithError(w, http.StatusInternalServerError, "Failed to read response body!")
+		return
+	}
+
+	var lavaResp LavaInvoiceResponse
+	err = json.Unmarshal(respBytes, &lavaResp)
+	if err != nil {
+		e.RespondWithError(w, http.StatusInternalServerError, "Failed to convert response!")
+		return
+	}
+
+	e.RespondWithJSON(w, http.StatusOK, LinkResponse{URL: lavaResp.Data.URL})
+}
+
+
+### CreateUserAndReturnStatus.go ###
+
+package handlers
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"svoy-vpn/internal/database"
+)
+
+func (e *Env) UserStatusHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var user User
+
+	httpRequestBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		e.RespondWithError(w, http.StatusBadRequest, "Failed to read request body!")
+		return
+	}
+
+	if err = json.Unmarshal(httpRequestBody, &user); err != nil {
+		e.RespondWithError(w, http.StatusBadRequest, "Failed to convert request body!")
+		return
+	}
+
+	vlessUUID, isNew, err := database.CreateUserIfNotExits(ctx, e.Conn, user.ID, user.Username)
+	if err != nil {
+		e.RespondWithError(w, http.StatusInternalServerError, "Failed to create user")
+		return
+	}
+
+	if isNew {
+		inboundID := 13
+		err = e.XUIClient.AddUser(ctx, int64(inboundID), vlessUUID, user.ID)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ResponseError{Error: "Failed to add user in panel!"})
+			return
+		}
+	}
+
+	status, err := database.CheckStatus(ctx, e.Conn, int64(user.ID))
+	if err != nil {
+		e.RespondWithError(w, http.StatusInternalServerError, "Failed to check status!")
+		return
+	}
+
+	HttpResponseStatus := ResponseStatus{Status: status}
+
+	StatusByte, err := json.Marshal(HttpResponseStatus)
+	if err != nil {
+		e.RespondWithError(w, http.StatusInternalServerError, "Failed to read response body!")
+		return
+	}
+	w.Write(StatusByte)
+}
+
+
+### Env.go ###
+
+package handlers
+
+import (
+	"encoding/json"
+	"log"
+	"net/http"
+	"svoy-vpn/internal/xui"
+
+	"github.com/jackc/pgx/v5"
+)
+
+type Env struct {
+	Conn         *pgx.Conn
+	XUIClient    *xui.XUIClient
+	BotToken     string
+	JwtSecret    []byte
+	LavaShopID   string
+	LavaSecret   string
+	XUIInboundID int64
+}
+
+func (e *Env) RespondWithError(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	if err := json.NewEncoder(w).Encode(ResponseError{Error: msg}); err != nil {
+		log.Println("Error encoding error response:", err)
+	}
+}
+
+func (e *Env) RespondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		log.Println("Error encoding JSON response:", err)
+	}
+}
+
+type LavaWebhookStruct struct {
+	Status       string  `json:"status"`
+	Sum          float64 `json:"sum"`
+	CustomFields int64   `json:"customFields"`
+}
+
+type User struct {
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
+}
+
+type ResponseStatus struct {
+	Status string `json:"status"`
+}
+
+type LavaInvoiceRequest struct {
+	Sum          float64 `json:"sum"`
+	OrderId      string  `json:"orderId"`
+	ShopId       string  `json:"shopId"`
+	CustomFields int64   `json:"customFields"`
+}
+
+type LavaInvoiceResponse struct {
+	Data struct {
+		URL string `json:"url"`
+	} `json:"data"`
+}
+
+type OrderRequest struct {
+	TgID   int64   `json:"tg_id"`
+	Amount float64 `json:"amount"`
+}
+
+type LinkResponse struct {
+	URL string `json:"url"`
+}
+
+type UserID struct {
+	ID int64 `json:"id"`
+}
+
+type ResponseError struct {
+	Error string `json:"error"`
+}
+
+type ResponseKey struct {
+	VlessURL string `json:"vless_url"`
+}
+
+
+### LavaWebhook.go ###
+
+package handlers
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"svoy-vpn/internal/database"
+)
+
+const SECRET_KEY = "ДОБАВИТЬ ИЗ КАБИНЕТА" //TODO: ДОБАВИТЬ ИЗ КАБИНЕТА
+
+func (e *Env) LavaWebhook(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	xuiClient := e.XUIClient
+	var lavaHook LavaWebhookStruct
+
+	httpRequestBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Failed to read request body!"})
+		return
+	}
+
+	err = json.Unmarshal(httpRequestBody, &lavaHook)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Failed to convert body!"})
+		return
+	}
+
+	lavaSignature := r.Header.Get("Signature")
+
+	signature := CreateSignature(httpRequestBody, SECRET_KEY)
+
+	if signature != lavaSignature {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Signatures are not equal! Access denied."})
+		return
+	}
+
+	if lavaHook.Status != "success" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Operation status not success!"})
+		return
+	}
+
+	err = database.Activate(ctx, e.Conn, lavaHook.CustomFields, lavaHook.Sum)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Failed to activate subscription!"})
+		return
+	}
+	uuid, err := database.GetUUID(ctx, e.Conn, lavaHook.CustomFields)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Failed to get uuid"})
+		return
+	}
+
+	err = xuiClient.Connect(ctx)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Failed to connect panel"})
+		return
+	}
+
+	err = xuiClient.AddUser(ctx, 13, uuid, lavaHook.CustomFields)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Failed to add user in xui panel"})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+
+}
+
+
+### TelegramAuth.go ###
+
+package handlers
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"svoy-vpn/internal/database"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+)
+
+type TgResponseData struct {
+	ID        int64  `json:"id"`
+	FirstName string `json:"first_name"`
+	Username  string `json:"username"`
+	AuthDate  int64  `json:"auth_date"`
+	Hash      string `json:"hash"`
+}
+
+type sendJWT struct {
+	JWT string `json:"jwt"`
+}
+
+var jwtSecret = []byte("SUPER_SECRET_ODEMA_KEY_2026")
+
+func generateJWT(tgID int64) (string, error) {
+	claims := jwt.MapClaims{
+		"sub": tgID,
+		"exp": time.Now().Add(time.Hour * 24 * 7).Unix(),
+		"iat": time.Now().Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	tokenString, err := token.SignedString(jwtSecret)
+	if err != nil {
+		return "", err
+	}
+
+	return tokenString, nil
+}
+
+func createHash(dataCheck string, token string) string {
+	mac := hmac.New(sha256.New, []byte("WebAppData"))
+	mac.Write([]byte(token))
+	secretKey := mac.Sum(nil)
+
+	h := hmac.New(sha256.New, secretKey)
+	h.Write([]byte(dataCheck))
+
+	calculatedHash := hex.EncodeToString(h.Sum(nil))
+
+	return calculatedHash
+}
+func (e *Env) Auth(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	httpRequestBody, err := io.ReadAll(r.Body)
+	var JWTToken string
+	var tgResp TgResponseData
+
+	err = json.Unmarshal(httpRequestBody, &tgResp)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Failed to convert request body"})
+		return
+	}
+
+	dataCheckString := fmt.Sprintf("auth_date=%d\nfirst_name=%s\nid=%d\nusername=%s", tgResp.AuthDate, tgResp.FirstName, tgResp.ID, tgResp.Username)
+
+	CalcedHash := createHash(dataCheckString, e.BotToken)
+
+	if tgResp.Hash != CalcedHash {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(ResponseError{Error: "HashCode is not equals! Access denied!"})
+		return
+	}
+	vlessUUID, isNew, err := database.CreateUserIfNotExits(ctx, e.Conn, tgResp.ID, tgResp.Username)
+	if err != nil {
+		e.RespondWithError(w, http.StatusInternalServerError, "Failed to create user")
+		return
+	}
+	if isNew {
+		inboundID := 13
+		err = e.XUIClient.AddUser(ctx, int64(inboundID), vlessUUID, tgResp.ID)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ResponseError{Error: "Failed to add user in panel!"})
+			return
+		}
+	}
+
+	JWTToken, err = generateJWT(tgResp.ID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Error in token generate"})
+		return
+	}
+
+	jwtResponse := sendJWT{JWT: JWTToken}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	byteJWT, err := json.Marshal(jwtResponse)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Failed to send JWT"})
+		return
+	}
+	w.Write(byteJWT)
+}
+
+### addUser.go ###
+
+package xui
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+)
+
+type XUIClientSettings struct {
+	ID         string `json:"id"`
+	Email      string `json:"email"`
+	LimitIP    int    `json:"limitIp"`
+	TotalGB    int64  `json:"totalGb"`
+	ExpiryTime int64  `json:"expiryTime"`
+	Enable     bool   `json:"enable"`
+	Flow       string `json:"flow"`
+}
+
+type XUIAddClient struct {
+	InboundID int64  `json:"id"`
+	Settings  string `json:"settings"`
+}
+
+type XUIClientsFields struct {
+	Clients []XUIClientSettings `json:"clients"`
+}
+
+func (x *XUIClient) AddUser(ctx context.Context, inboundID int64, uuid string, TgID int64) error {
+	clientSpec := XUIClientSettings{
+		ID:         uuid,
+		Email:      strconv.FormatInt(TgID, 10),
+		LimitIP:    0,
+		TotalGB:    0,
+		ExpiryTime: 0,
+		Enable:     true,
+		Flow:       "",
+	}
+
+	var wrap XUIClientsFields
+
+	wrap.Clients = []XUIClientSettings{clientSpec}
+
+	settingsBuff, err := json.Marshal(wrap)
+	if err != nil {
+		return err
+	}
+
+	finalReqData := XUIAddClient{
+		InboundID: inboundID,
+		Settings:  string(settingsBuff),
+	}
+
+	finalBody, err := json.Marshal(finalReqData)
+	if err != nil {
+		return err
+	}
+
+	addClientUrl := x.BaseURL + "/panel/api/inbounds/addClient"
+
+	req, err := http.NewRequestWithContext(ctx, "POST", addClientUrl, bytes.NewReader(finalBody))
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "session", Value: x.CookieSession})
+
+	resp, err := x.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to add client, server returned status: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+### client.go ###
+
+package xui
+
+import (
+	"net/http"
+	"time"
+)
+
+type XUIClient struct {
+	BaseURL       string
+	Login         string
+	Password      string
+	CookieSession string
+	HTTPClient    *http.Client
+}
+
+func CreateClient(baseurl string, login string, password string) *XUIClient {
+	return &XUIClient{
+		BaseURL:  baseurl,
+		Login:    login,
+		Password: password,
+		HTTPClient: &http.Client{
+			Timeout: time.Second * 10,
+		},
+	}
+
+}
+
+### connect.go ###
+
+package xui
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"net/url"
+	"strings"
+)
+
+func (x *XUIClient) Connect(ctx context.Context) error {
+	formData := url.Values{}
+
+	formData.Set("username", x.Login)
+	formData.Set("password", x.Password)
+
+	loginURL := x.BaseURL + "/login"
+
+	req, err := http.NewRequestWithContext(ctx, "POST", loginURL, strings.NewReader(formData.Encode()))
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := x.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Login Failed with status-code: %d", resp.StatusCode)
+		return fmt.Errorf("login failed with status: %d", resp.StatusCode)
+	}
+
+	cookies := resp.Cookies()
+
+	for _, cookie := range cookies {
+		if cookie.Name == "session" {
+			x.CookieSession = cookie.Value
+			log.Println("Успешно авторизовались в 3X-UI, кука получена!")
+			return nil
+		}
+	}
+
+	log.Println("Status code 200, but there is not cookie!")
+	return nil
+}
+
+
+### disableUser.go ###
+
+package xui
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+)
+
+func (x *XUIClient) DisableUser(ctx context.Context, inboundID int64, uuid string, tgID int64) error {
+	clientSpec := XUIClientSettings{
+		ID:         uuid,
+		Email:      strconv.FormatInt(tgID, 10),
+		LimitIP:    0,
+		TotalGB:    0,
+		ExpiryTime: 0,
+		Enable:     false,
+		Flow:       "",
+	}
+
+	var wrap XUIClientsFields
+
+	wrap.Clients = []XUIClientSettings{clientSpec}
+
+	wrapByte, err := json.Marshal(wrap)
+	if err != nil {
+		return err
+	}
+
+	finalReqData := XUIAddClient{
+		InboundID: inboundID,
+		Settings:  string(wrapByte),
+	}
+
+	finalReqDataByte, err := json.Marshal(finalReqData)
+
+	disableClientURL := x.BaseURL + "/panel/api/inbounds/updateClient/" + uuid
+
+	req, err := http.NewRequestWithContext(ctx, "POST", disableClientURL, bytes.NewReader(finalReqDataByte))
+
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "session", Value: x.CookieSession})
+
+	resp, err := x.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to add client, server returned status: %d", resp.StatusCode)
+	}
+
+	return nil
+}
