@@ -20,8 +20,8 @@ func CreateUserIfNotExits(ctx context.Context, conn *pgx.Conn, tgID int64, usern
 	query1 := `
 	INSERT INTO users (id, username, vless_uuid)
 	VALUES ($1, $2, $3)
-	ON CONFLICT (id) DO NOTHING;
-	RETURNING id
+	ON CONFLICT (id) DO NOTHING
+	RETURNING id;
 	`
 
 	var InsertFlag int64

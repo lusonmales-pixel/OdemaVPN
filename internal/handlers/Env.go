@@ -17,6 +17,11 @@ type Env struct {
 	LavaShopID   string
 	LavaSecret   string
 	XUIInboundID int64
+	ServerIp     string
+	ServerPort   string
+	ServerPBK    string
+	ServerSNI    string
+	ServerSID    string
 }
 
 func (e *Env) RespondWithError(w http.ResponseWriter, code int, msg string) {

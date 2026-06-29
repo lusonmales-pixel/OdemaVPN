@@ -7,8 +7,6 @@ import (
 	"svoy-vpn/internal/database"
 )
 
-const SECRET_KEY = "ДОБАВИТЬ ИЗ КАБИНЕТА" //TODO: ДОБАВИТЬ ИЗ КАБИНЕТА
-
 func (e *Env) LavaWebhook(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	xuiClient := e.XUIClient
@@ -32,7 +30,7 @@ func (e *Env) LavaWebhook(w http.ResponseWriter, r *http.Request) {
 
 	lavaSignature := r.Header.Get("Signature")
 
-	signature := CreateSignature(httpRequestBody, SECRET_KEY)
+	signature := CreateSignature(httpRequestBody, e.LavaSecret)
 
 	if signature != lavaSignature {
 		w.Header().Set("Content-Type", "application/json")
@@ -63,7 +61,7 @@ func (e *Env) LavaWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = xuiClient.AddUser(ctx, 13, uuid, lavaHook.CustomFields)
+	err = xuiClient.AddUser(ctx, e.XUIInboundID, uuid, lavaHook.CustomFields)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)

@@ -59,15 +59,20 @@ func main() {
 		LavaShopID:   os.Getenv("LAVA_SHOP_ID"),
 		LavaSecret:   os.Getenv("LAVA_SECRET_KEY"),
 		XUIInboundID: inboundID,
+		ServerIp:     os.Getenv("ServerIP"),
+		ServerPort:   os.Getenv("ServerPort"),
+		ServerPBK:    os.Getenv("ServerPBK"),
+		ServerSNI:    os.Getenv("ServerSNI"),
+		ServerSID:    os.Getenv("ServerSID"),
 	}
 
 	http.HandleFunc("/api/payment/create", env.CreateOrder)
 	http.HandleFunc("/api/v1/payments/lava/webhook", env.LavaWebhook)
-	http.HandleFunc("/api/user/config", env.CreateKey)
+	http.Handle("/api/user/config", env.ValidateJWT(http.HandlerFunc(env.CreateKey)))
 	http.HandleFunc("/api/auth", env.Auth)
 
 	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
+		ticker := time.NewTicker(24 * time.Hour)
 		for range ticker.C {
 			ctx := context.Background()
 			log.Println("Running subscription expiration worker...")

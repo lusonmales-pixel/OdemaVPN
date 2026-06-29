@@ -26,9 +26,7 @@ type sendJWT struct {
 	JWT string `json:"jwt"`
 }
 
-var jwtSecret = []byte("SUPER_SECRET_ODEMA_KEY_2026")
-
-func generateJWT(tgID int64) (string, error) {
+func (e *Env) generateJWT(tgID int64) (string, error) {
 	claims := jwt.MapClaims{
 		"sub": tgID,
 		"exp": time.Now().Add(time.Hour * 24 * 7).Unix(),
@@ -37,7 +35,7 @@ func generateJWT(tgID int64) (string, error) {
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 
-	tokenString, err := token.SignedString(jwtSecret)
+	tokenString, err := token.SignedString(e.JwtSecret)
 	if err != nil {
 		return "", err
 	}
@@ -84,7 +82,7 @@ func (e *Env) Auth(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _, err = database.CreateUserIfNotExits(ctx, e.Conn, tgResp.ID, tgResp.Username)
 
-	JWTToken, err = generateJWT(tgResp.ID)
+	JWTToken, err = e.generateJWT(tgResp.ID)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
