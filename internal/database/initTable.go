@@ -12,7 +12,9 @@ func InitTable(ctx context.Context, conn *pgx.Conn) error {
 	id BIGINT PRIMARY KEY,
 	username VARCHAR(100),
 	vless_uuid VARCHAR(36) DEFAULT NULL,
-	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	referrer_id BIGINT DEFAULT NULL,
+	referral_bonus_given BOOL DEFAULT FALSE
 	);
 
 	CREATE TABLE IF NOT EXISTS subscriptions (
@@ -20,6 +22,11 @@ func InitTable(ctx context.Context, conn *pgx.Conn) error {
 	status VARCHAR(20) DEFAULT 'inactive',
 	expires_at TIMESTAMP DEFAULT NULL,
 	updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS referral_codes (
+	code VARCHAR(6) PRIMARY KEY,
+	owner_id BIGINT REFERENCES users(id) UNIQUE
 	);
 	`
 

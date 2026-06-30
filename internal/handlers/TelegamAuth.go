@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"svoy-vpn/internal/database"
 	"time"
@@ -24,6 +25,10 @@ type TgResponseData struct {
 
 type sendJWT struct {
 	JWT string `json:"jwt"`
+}
+
+type RefCode struct {
+	ReferralCode string `json:"ref_code"`
 }
 
 func (e *Env) generateJWT(tgID int64) (string, error) {
@@ -61,8 +66,16 @@ func (e *Env) Auth(w http.ResponseWriter, r *http.Request) {
 	httpRequestBody, err := io.ReadAll(r.Body)
 	var JWTToken string
 	var tgResp TgResponseData
+	var ReferralCode RefCode
 
 	err = json.Unmarshal(httpRequestBody, &tgResp)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Failed to convert request body"})
+		return
+	}
+	err = json.Unmarshal(httpRequestBody, &ReferralCode)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -80,7 +93,13 @@ func (e *Env) Auth(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(ResponseError{Error: "HashCode is not equals! Access denied!"})
 		return
 	}
-	_, _, err = database.CreateUserIfNotExits(ctx, e.Conn, tgResp.ID, tgResp.Username)
+	_, isNew, err := database.CreateUserIfNotExits(ctx, e.Conn, tgResp.ID, tgResp.Username)
+	if ReferralCode.ReferralCode != "" && isNew {
+		_, err = database.GetUserByRefCode(ctx, e.Conn, ReferralCode.ReferralCode, tgResp.ID)
+		if err != nil {
+			log.Println("Failed to apply referal code:", err)
+		}
+	}
 
 	JWTToken, err = e.generateJWT(tgResp.ID)
 	if err != nil {

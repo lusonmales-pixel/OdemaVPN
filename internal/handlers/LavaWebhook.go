@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"svoy-vpn/internal/database"
 )
@@ -53,6 +54,11 @@ func (e *Env) LavaWebhook(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(ResponseError{Error: "Failed to activate subscription!"})
 		return
 	}
+	err = database.ApplyReffererBonus(ctx, e.Conn, lavaHook.CustomFields)
+	if err != nil {
+		log.Println("Failed to activate your referral code:", err)
+	}
+
 	uuid, err := database.GetUUID(ctx, e.Conn, lavaHook.CustomFields)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
