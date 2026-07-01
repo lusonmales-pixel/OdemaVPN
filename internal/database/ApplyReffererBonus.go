@@ -9,7 +9,7 @@ import (
 
 func ApplyReffererBonus(ctx context.Context, conn *pgx.Conn, UserID int64) error {
 	query1 := `
-	SELECT referrer_id, referrer_bonus_given FROM users
+	SELECT referrer_id, referral_bonus_given FROM users
 	WHERE id = $1
 	`
 

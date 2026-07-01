@@ -60,7 +60,6 @@ func main() {
 		ServerPBK:    os.Getenv("ServerPBK"),
 		ServerSNI:    os.Getenv("ServerSNI"),
 		ServerSID:    os.Getenv("ServerSID"),
-		ApiToken:     os.Getenv("XUI_API_TOKEN"),
 	}
 
 	http.HandleFunc("/api/payment/create", env.CreateOrder)
@@ -68,7 +67,6 @@ func main() {
 	http.Handle("/api/user/config", env.ValidateJWT(http.HandlerFunc(env.CreateKey)))
 	http.HandleFunc("/api/auth", env.Auth)
 	http.Handle("/api/referral/getCode", env.ValidateJWT(http.HandlerFunc(env.GetReferralCode)))
-	http.HandleFunc("/api/panel/addClientTest", env.TestAddUser)
 
 	go func() {
 		ticker := time.NewTicker(24 * time.Hour)

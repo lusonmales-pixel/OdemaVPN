@@ -22,7 +22,6 @@ type Env struct {
 	ServerPBK    string
 	ServerSNI    string
 	ServerSID    string
-	ApiToken     string
 }
 
 func (e *Env) RespondWithError(w http.ResponseWriter, code int, msg string) {
@@ -47,15 +46,6 @@ type LavaWebhookStruct struct {
 	CustomFields int64   `json:"customFields"`
 }
 
-type User struct {
-	ID       int64  `json:"id"`
-	Username string `json:"username"`
-}
-
-type ResponseStatus struct {
-	Status string `json:"status"`
-}
-
 type LavaInvoiceRequest struct {
 	Sum          float64 `json:"sum"`
 	OrderId      string  `json:"orderId"`
@@ -76,10 +66,6 @@ type OrderRequest struct {
 
 type LinkResponse struct {
 	URL string `json:"url"`
-}
-
-type UserID struct {
-	ID int64 `json:"id"`
 }
 
 type ResponseError struct {

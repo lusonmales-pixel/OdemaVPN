@@ -64,6 +64,12 @@ func (e *Env) Auth(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	httpRequestBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Failed to convert request body"})
+		return
+	}
 	var JWTToken string
 	var tgResp TgResponseData
 	var ReferralCode RefCode

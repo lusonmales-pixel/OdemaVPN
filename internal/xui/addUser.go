@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -82,7 +81,6 @@ func (x *XUIClient) AddUser(ctx context.Context, inboundID int64, uuid string, T
 		return err
 	}
 
-	log.Println("XUI response:", xuiError.SuccessStatus, xuiError.Message)
 	if !xuiError.SuccessStatus && strings.Contains(xuiError.Message, "email already in use") {
 		err = x.EnableUser(ctx, TgID)
 		if err != nil {
