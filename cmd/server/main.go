@@ -25,8 +25,7 @@ func main() {
 	}
 
 	xuiURL := os.Getenv("XUI_BASE_URL")
-	xuiLogin := os.Getenv("XUI_LOGIN")
-	xuiPassword := os.Getenv("XUI_PASSWORD")
+	xuiApiToken := os.Getenv("XUI_API_TOKEN")
 	inboundIDStr := os.Getenv("XUI_INBOUND_ID")
 
 	inboundID, err := strconv.ParseInt(inboundIDStr, 10, 64)
@@ -46,10 +45,7 @@ func main() {
 		log.Fatalln("Failed to create tables:", err)
 	}
 
-	xuiClient := xui.CreateClient(xuiURL, xuiLogin, xuiPassword)
-	if err := xuiClient.Connect(ctx); err != nil {
-		log.Println("WARNING: Failed to login into 3X-UI panel:", err)
-	}
+	xuiClient := xui.CreateClient(xuiURL, xuiApiToken)
 
 	env := &handlers.Env{
 		Conn:         conn,
@@ -64,6 +60,7 @@ func main() {
 		ServerPBK:    os.Getenv("ServerPBK"),
 		ServerSNI:    os.Getenv("ServerSNI"),
 		ServerSID:    os.Getenv("ServerSID"),
+		ApiToken:     os.Getenv("XUI_API_TOKEN"),
 	}
 
 	http.HandleFunc("/api/payment/create", env.CreateOrder)
@@ -71,6 +68,8 @@ func main() {
 	http.Handle("/api/user/config", env.ValidateJWT(http.HandlerFunc(env.CreateKey)))
 	http.HandleFunc("/api/auth", env.Auth)
 	http.Handle("/api/referral/getCode", env.ValidateJWT(http.HandlerFunc(env.GetReferralCode)))
+	http.HandleFunc("/api/panel/addClientTest", env.TestAddUser)
+
 	go func() {
 		ticker := time.NewTicker(24 * time.Hour)
 		for range ticker.C {
@@ -84,7 +83,7 @@ func main() {
 			}
 
 			for _, user := range expiredUsers {
-				err := env.XUIClient.DisableUser(ctx, env.XUIInboundID, user.Vless_uuid, user.TgId)
+				err := env.XUIClient.DisableUser(ctx, user.TgId)
 				if err != nil {
 					log.Printf("Failed to disable user %d on 3X-UI panel: %v", user.TgId, err)
 				} else {

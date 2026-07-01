@@ -22,6 +22,7 @@ type Env struct {
 	ServerPBK    string
 	ServerSNI    string
 	ServerSID    string
+	ApiToken     string
 }
 
 func (e *Env) RespondWithError(w http.ResponseWriter, code int, msg string) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,20 +14,20 @@ import (
 type XUIClientSettings struct {
 	ID         string `json:"id"`
 	Email      string `json:"email"`
-	LimitIP    int    `json:"limitIp"`
+	Enable     bool   `json:"enable"`
 	TotalGB    int64  `json:"totalGb"`
 	ExpiryTime int64  `json:"expiryTime"`
-	Enable     bool   `json:"enable"`
-	Flow       string `json:"flow"`
+	TgID       int    `json:"tgId"`
+	LimitIP    int    `json:"limitIp"`
+	Reset      int    `json:"reset"`
+	SubId      string `json:"subId"`
+	Comment    string `json:"comment"`
+	Security   string `json:"security"`
 }
 
 type XUIAddClient struct {
-	InboundID int64  `json:"id"`
-	Settings  string `json:"settings"`
-}
-
-type XUIClientsFields struct {
-	Clients []XUIClientSettings `json:"clients"`
+	Client     XUIClientSettings `json:"client"`
+	InboundIDs []int64           `json:"inboundIds"`
 }
 
 type XUIError struct {
@@ -43,21 +44,10 @@ func (x *XUIClient) AddUser(ctx context.Context, inboundID int64, uuid string, T
 		TotalGB:    0,
 		ExpiryTime: 0,
 		Enable:     true,
-		Flow:       "",
 	}
-
-	var wrap XUIClientsFields
-
-	wrap.Clients = []XUIClientSettings{clientSpec}
-
-	settingsBuff, err := json.Marshal(wrap)
-	if err != nil {
-		return err
-	}
-
 	finalReqData := XUIAddClient{
-		InboundID: inboundID,
-		Settings:  string(settingsBuff),
+		Client:     clientSpec,
+		InboundIDs: []int64{inboundID},
 	}
 
 	finalBody, err := json.Marshal(finalReqData)
@@ -65,7 +55,7 @@ func (x *XUIClient) AddUser(ctx context.Context, inboundID int64, uuid string, T
 		return err
 	}
 
-	addClientUrl := x.BaseURL + "/panel/api/inbounds/addClient"
+	addClientUrl := x.BaseURL + "/panel/api/clients/add"
 
 	req, err := http.NewRequestWithContext(ctx, "POST", addClientUrl, bytes.NewReader(finalBody))
 	if err != nil {
@@ -73,7 +63,7 @@ func (x *XUIClient) AddUser(ctx context.Context, inboundID int64, uuid string, T
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "3x-ui", Value: x.CookieSession})
+	req.Header.Set("Authorization", "Bearer "+x.ApiToken)
 
 	resp, err := x.HTTPClient.Do(req)
 	if err != nil {
@@ -92,8 +82,9 @@ func (x *XUIClient) AddUser(ctx context.Context, inboundID int64, uuid string, T
 		return err
 	}
 
-	if !xuiError.SuccessStatus && strings.Contains(xuiError.Message, "Duplicate") {
-		err = x.EnableUser(ctx, inboundID, uuid, TgID)
+	log.Println("XUI response:", xuiError.SuccessStatus, xuiError.Message)
+	if !xuiError.SuccessStatus && strings.Contains(xuiError.Message, "email already in use") {
+		err = x.EnableUser(ctx, TgID)
 		if err != nil {
 			return err
 		}

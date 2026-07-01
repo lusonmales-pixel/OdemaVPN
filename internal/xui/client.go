@@ -7,18 +7,15 @@ import (
 )
 
 type XUIClient struct {
-	BaseURL       string
-	Login         string
-	Password      string
-	CookieSession string
-	HTTPClient    *http.Client
+	BaseURL    string
+	ApiToken   string
+	HTTPClient *http.Client
 }
 
-func CreateClient(baseurl string, login string, password string) *XUIClient {
+func CreateClient(baseurl string, apiToken string) *XUIClient {
 	return &XUIClient{
 		BaseURL:  baseurl,
-		Login:    login,
-		Password: password,
+		ApiToken: apiToken,
 		HTTPClient: &http.Client{
 			Timeout: time.Second * 10,
 			Transport: &http.Transport{

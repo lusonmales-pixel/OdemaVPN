@@ -9,39 +9,26 @@ import (
 	"strconv"
 )
 
-func (x *XUIClient) DisableUser(ctx context.Context, inboundID int64, uuid string, tgID int64) error {
-	clientSpec := XUIClientSettings{
-		ID:         uuid,
-		Email:      strconv.FormatInt(tgID, 10),
-		LimitIP:    0,
-		TotalGB:    0,
-		ExpiryTime: 0,
-		Enable:     false,
-		Flow:       "",
+func (x *XUIClient) DisableUser(ctx context.Context, tgID int64) error {
+
+	finalReqData := XUIBulkAction{
+		Emails: []string{strconv.FormatInt(tgID, 10)},
 	}
 
-	var wrap XUIClientsFields
-
-	wrap.Clients = []XUIClientSettings{clientSpec}
-
-	wrapByte, err := json.Marshal(wrap)
+	finalReqDataByte, err := json.Marshal(finalReqData)
 	if err != nil {
 		return err
 	}
 
-	finalReqData := XUIAddClient{
-		InboundID: inboundID,
-		Settings:  string(wrapByte),
-	}
-
-	finalReqDataByte, err := json.Marshal(finalReqData)
-
-	disableClientURL := x.BaseURL + "/panel/api/inbounds/updateClient/" + uuid
+	disableClientURL := x.BaseURL + "/panel/api/clients/bulkDisable"
 
 	req, err := http.NewRequestWithContext(ctx, "POST", disableClientURL, bytes.NewReader(finalReqDataByte))
+	if err != nil {
+		return err
+	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "3x-ui", Value: x.CookieSession})
+	req.Header.Set("Authorization", "Bearer "+x.ApiToken)
 
 	resp, err := x.HTTPClient.Do(req)
 	if err != nil {
