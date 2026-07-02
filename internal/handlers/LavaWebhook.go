@@ -67,7 +67,15 @@ func (e *Env) LavaWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = xuiClient.AddUser(ctx, e.XUIInboundID, uuid, lavaHook.CustomFields)
+	SubID, err := database.GetSubID(ctx, e.Conn, lavaHook.CustomFields)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Failed to get uuid"})
+		return
+	}
+
+	err = xuiClient.AddUser(ctx, e.XUIInboundID, uuid, lavaHook.CustomFields, SubID)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)

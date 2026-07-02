@@ -13,6 +13,7 @@ func InitTable(ctx context.Context, conn *pgx.Conn) error {
 	username VARCHAR(100),
 	vless_uuid VARCHAR(36) DEFAULT NULL,
 	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	sub_id VARCHAR(16) DEFAULT NULL,
 	referrer_id BIGINT DEFAULT NULL,
 	referral_bonus_given BOOL DEFAULT FALSE
 	);

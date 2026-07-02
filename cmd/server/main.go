@@ -60,6 +60,7 @@ func main() {
 		ServerPBK:    os.Getenv("ServerPBK"),
 		ServerSNI:    os.Getenv("ServerSNI"),
 		ServerSID:    os.Getenv("ServerSID"),
+		SubURL:       os.Getenv("SUB_URL"),
 	}
 
 	http.HandleFunc("/api/payment/create", env.CreateOrder)

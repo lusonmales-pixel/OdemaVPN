@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"fmt"
 	"log"
 	"net/http"
 	"svoy-vpn/internal/database"
@@ -27,22 +26,14 @@ func (e *Env) CreateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vlessUUID, err := database.GetUUID(ctx, e.Conn, tgID)
+	subID, err := database.GetSubID(ctx, e.Conn, tgID)
 	if err != nil {
-		log.Println("Database error getting UUID:", err)
+		log.Println("Database error getting SubID:", err)
 		e.RespondWithError(w, http.StatusInternalServerError, "Internal database error")
 		return
 	}
 
-	vlessURL := fmt.Sprintf(
-		"vless://%s@%s:%s?type=tcp&security=reality&pbk=%s&fp=chrome&sni=%s&sid=%s&spx=%%2F#OdemaVPN",
-		vlessUUID,
-		e.ServerIp,
-		e.ServerPort,
-		e.ServerPBK,
-		e.ServerSNI,
-		e.ServerSID,
-	)
+	SubURL := e.SubURL + subID
 
-	e.RespondWithJSON(w, http.StatusOK, ResponseKey{VlessURL: vlessURL})
+	e.RespondWithJSON(w, http.StatusOK, ResponseKey{SubURL: SubURL})
 }

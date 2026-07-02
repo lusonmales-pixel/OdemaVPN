@@ -22,6 +22,7 @@ type Env struct {
 	ServerPBK    string
 	ServerSNI    string
 	ServerSID    string
+	SubURL       string
 }
 
 func (e *Env) RespondWithError(w http.ResponseWriter, code int, msg string) {
@@ -73,5 +74,5 @@ type ResponseError struct {
 }
 
 type ResponseKey struct {
-	VlessURL string `json:"vless_url"`
+	SubURL string `json:"sub_url"`
 }

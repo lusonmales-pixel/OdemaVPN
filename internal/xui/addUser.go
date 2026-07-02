@@ -34,15 +34,16 @@ type XUIError struct {
 	Message       string `json:"msg"`
 }
 
-func (x *XUIClient) AddUser(ctx context.Context, inboundID int64, uuid string, TgID int64) error {
+func (x *XUIClient) AddUser(ctx context.Context, inboundID int64, uuid string, TgID int64, subID string) error {
 	var xuiError XUIError
 	clientSpec := XUIClientSettings{
 		ID:         uuid,
 		Email:      strconv.FormatInt(TgID, 10),
-		LimitIP:    0,
+		LimitIP:    5,
 		TotalGB:    0,
 		ExpiryTime: 0,
 		Enable:     true,
+		SubId:      subID,
 	}
 	finalReqData := XUIAddClient{
 		Client:     clientSpec,
