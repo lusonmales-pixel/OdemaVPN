@@ -3,32 +3,41 @@ package handlers
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"errors"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
 	"svoy-vpn/internal/database"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-type TgResponseData struct {
-	ID        int64  `json:"id"`
-	FirstName string `json:"first_name"`
-	Username  string `json:"username"`
-	AuthDate  int64  `json:"auth_date"`
-	Hash      string `json:"hash"`
+type AuthRequest struct {
+	InitData string `json:"init_data"`
+	RefCode  string `json:"ref_code"`
+}
+
+type tgUserData struct {
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
+}
+
+type telegramInitData struct {
+	Hash      string
+	AuthDate  int64
+	DataCheck string
+	User      tgUserData
 }
 
 type sendJWT struct {
 	JWT string `json:"jwt"`
-}
-
-type RefCode struct {
-	ReferralCode string `json:"ref_code"`
 }
 
 func (e *Env) generateJWT(tgID int64) (string, error) {
@@ -60,6 +69,57 @@ func createHash(dataCheck string, token string) string {
 
 	return calculatedHash
 }
+
+func parseTelegramInitData(initData string) (telegramInitData, error) {
+	values, err := url.ParseQuery(initData)
+	if err != nil {
+		return telegramInitData{}, err
+	}
+
+	hash := values.Get("hash")
+	if hash == "" {
+		return telegramInitData{}, errors.New("missing hash")
+	}
+
+	authDateRaw := values.Get("auth_date")
+	authDate, err := strconv.ParseInt(authDateRaw, 10, 64)
+	if err != nil {
+		return telegramInitData{}, errors.New("invalid auth_date")
+	}
+	values.Del("hash")
+
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	dataCheckParts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		dataCheckParts = append(dataCheckParts, key+"="+values.Get(key))
+	}
+
+	userRaw := values.Get("user")
+	if userRaw == "" {
+		return telegramInitData{}, errors.New("missing user")
+	}
+
+	var user tgUserData
+	if err := json.Unmarshal([]byte(userRaw), &user); err != nil {
+		return telegramInitData{}, err
+	}
+	if user.ID == 0 {
+		return telegramInitData{}, errors.New("invalid user id")
+	}
+
+	return telegramInitData{
+		Hash:      hash,
+		AuthDate:  authDate,
+		DataCheck: strings.Join(dataCheckParts, "\n"),
+		User:      user,
+	}, nil
+}
+
 func (e *Env) Auth(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -70,44 +130,49 @@ func (e *Env) Auth(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(ResponseError{Error: "Failed to convert request body"})
 		return
 	}
-	var JWTToken string
-	var tgResp TgResponseData
-	var ReferralCode RefCode
 
-	err = json.Unmarshal(httpRequestBody, &tgResp)
+	var req AuthRequest
+	err = json.Unmarshal(httpRequestBody, &req)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ResponseError{Error: "Failed to convert request body"})
-		return
-	}
-	err = json.Unmarshal(httpRequestBody, &ReferralCode)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(ResponseError{Error: "Failed to convert request body"})
 		return
 	}
 
-	dataCheckString := fmt.Sprintf("auth_date=%d\nfirst_name=%s\nid=%d\nusername=%s", tgResp.AuthDate, tgResp.FirstName, tgResp.ID, tgResp.Username)
+	tgInitData, err := parseTelegramInitData(req.InitData)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Invalid Telegram initData"})
+		return
+	}
 
-	CalcedHash := createHash(dataCheckString, e.BotToken)
+	if time.Now().Unix()-tgInitData.AuthDate > 86400 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(ResponseError{Error: "Telegram initData is expired"})
+		return
+	}
 
-	if tgResp.Hash != CalcedHash {
+	calcedHash := createHash(tgInitData.DataCheck, e.BotToken)
+
+	if tgInitData.Hash != calcedHash {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(ResponseError{Error: "HashCode is not equals! Access denied!"})
 		return
 	}
-	_, isNew, err := database.CreateUserIfNotExits(ctx, e.Conn, tgResp.ID, tgResp.Username)
-	if ReferralCode.ReferralCode != "" && isNew {
-		_, err = database.GetUserByRefCode(ctx, e.Conn, ReferralCode.ReferralCode, tgResp.ID)
+
+	_, isNew, err := database.CreateUserIfNotExits(ctx, e.Conn, tgInitData.User.ID, tgInitData.User.Username)
+	if req.RefCode != "" && isNew {
+		_, err = database.GetUserByRefCode(ctx, e.Conn, req.RefCode, tgInitData.User.ID)
 		if err != nil {
 			log.Println("Failed to apply referal code:", err)
 		}
 	}
 
-	JWTToken, err = e.generateJWT(tgResp.ID)
+	JWTToken, err := e.generateJWT(tgInitData.User.ID)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)

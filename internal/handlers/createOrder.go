@@ -22,6 +22,12 @@ func (e *Env) CreateOrder(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var req OrderRequest
 
+	tgID, ok := ctx.Value("TgID").(int64)
+	if !ok {
+		e.RespondWithError(w, http.StatusUnauthorized, "Failed to get TgID from context")
+		return
+	}
+
 	httpRequestBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		e.RespondWithError(w, http.StatusBadRequest, "Failed to read body")
@@ -31,6 +37,10 @@ func (e *Env) CreateOrder(w http.ResponseWriter, r *http.Request) {
 	err = json.Unmarshal(httpRequestBody, &req)
 	if err != nil {
 		e.RespondWithError(w, http.StatusBadRequest, "Failed to parse JSON request")
+		return
+	}
+	if req.TgID != tgID {
+		e.RespondWithError(w, http.StatusForbidden, "tg_id does not match authorized user")
 		return
 	}
 

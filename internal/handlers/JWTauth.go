@@ -28,6 +28,10 @@ func (e *Env) ValidateJWT(next http.Handler) http.Handler {
 			w.WriteHeader(401)
 			return
 		}
+		if !token.Valid {
+			w.WriteHeader(401)
+			return
+		}
 
 		claims, ok := token.Claims.(*CustomClaims)
 		if !ok {

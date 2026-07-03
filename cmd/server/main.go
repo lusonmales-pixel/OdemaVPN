@@ -14,6 +14,21 @@ import (
 	"github.com/joho/godotenv"
 )
 
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("Warning: No .env file found, using system env")
@@ -63,9 +78,10 @@ func main() {
 		SubURL:       os.Getenv("SUB_URL"),
 	}
 
-	http.HandleFunc("/api/payment/create", env.CreateOrder)
+	http.Handle("/api/payment/create", env.ValidateJWT(http.HandlerFunc(env.CreateOrder)))
 	http.HandleFunc("/api/v1/payments/lava/webhook", env.LavaWebhook)
 	http.Handle("/api/user/config", env.ValidateJWT(http.HandlerFunc(env.CreateKey)))
+	http.Handle("/api/user/subscription", env.ValidateJWT(http.HandlerFunc(env.GetSubscription)))
 	http.HandleFunc("/api/auth", env.Auth)
 	http.Handle("/api/referral/getCode", env.ValidateJWT(http.HandlerFunc(env.GetReferralCode)))
 
@@ -92,7 +108,7 @@ func main() {
 		}
 	}()
 
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
+	if err := http.ListenAndServe(":"+port, corsMiddleware(http.DefaultServeMux)); err != nil {
 		log.Fatalln("Server failed to start:", err)
 	}
 }
